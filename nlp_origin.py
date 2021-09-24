@@ -77,20 +77,19 @@ def filter_homograph(train_document):
 
 
 if __name__=='__main__':
-    ticket = pd.read_excel(r'E:\Data\ICM_Kusto_Data_YTD_2021.xlsx',sheet_name='filter_s3_test')['IncidentType']
-    ticket.loc[ticket=='CustomerReported']=0
-    ticket.loc[ticket=='LiveSite']=1
+    data = pd.read_excel(r'E:\Data\ICM_Kusto_Data_YTD_2021.xlsx',sheet_name='filter_s3_test')
+    data = data.fillna('-1')
+
+    max_features = 3
+    num_clusters = 3
+    data = data[data['IsOutage']==True]
+    state_isoutage = 'true'
+    # data = data[data['IsOutage']=='-1']
+    # state_isoutage = 'none'
+
+    data = data.reset_index(drop=True)
     measure = 'Summary'
-
-    nltk.download('stopwords')
-    stopwords = nltk.corpus.stopwords.words('english')  
-    f = open('stop_word.txt')
-    stopwords_n = f.read().splitlines()
-    stopwords = stopwords+stopwords_n
-    tfidf_vectorizer = TfidfVectorizer(max_features=3, stop_words=stopwords) #
-
-    train_document  = pd.read_excel(r'E:\Data\ICM_Kusto_Data_YTD_2021.xlsx',sheet_name='filter_s3_test')[measure]
-    train_document = train_document.fillna('-1')
+    train_document  = data[measure]
 
     # html格式去除
     train_document = train_document.apply(lambda x: html2text.html2text(x).replace('\n', ' ').replace('\t', ' ').lower())
@@ -100,7 +99,10 @@ if __name__=='__main__':
     rex_date = r"(\d{4}-\d{1,2}-\d{1,2}\s\d{1,2}:\d{1,2})"
     train_document = train_document.apply(lambda x: re.compile(rex_date,re.S).sub(' ', x))
 
-    #词形还原
+    # 去除‘:’
+    train_document = train_document.apply(lambda x: re.compile(r':',re.S).sub(' ', x)) 
+
+    # 词形还原
     train_document = filter_homograph(train_document)
     # pst = PorterStemmer()
     # train_document = train_document.apply(lambda y: ' '.join([pst.stem(x) for x in y.split()]))
@@ -108,23 +110,30 @@ if __name__=='__main__':
     #同义词去除
     train_document = train_document.apply(lambda y: ' '.join(synonyns_filtered(y.split())))
 
+    #词形还原
+    train_document = filter_homograph(train_document)
+
     #feature--tfidf
+    nltk.download('stopwords')
+    stopwords = nltk.corpus.stopwords.words('english')  
+    f = open('stop_word.txt')
+    stopwords_n = f.read().splitlines()
+    stopwords = stopwords+stopwords_n
+    tfidf_vectorizer = TfidfVectorizer(max_features=max_features, stop_words=stopwords) #
     tfidf_matrix = tfidf_vectorizer.fit_transform(train_document.values)
-    dist = 1-cosine_similarity(tfidf_matrix)  
+    dist_train = 1-cosine_similarity(tfidf_matrix)  
     terms = tfidf_vectorizer.get_feature_names()
 
     # kmeans
-    num_clusters = 2 #聚为四类，可根据需要修改
+    num_clusters = num_clusters #聚为四类，可根据需要修改
     km = KMeans(n_clusters=num_clusters, random_state=1)
     km.fit(tfidf_matrix)
     clusters = km.labels_.tolist()
 
     # test_document = pd.read_excel('./file/testdata.xls',sheet_name='Sheet3')['reason']
     test_document = train_document
-    test_document = test_document.fillna('-1')
     tfidf_matrix_test = tfidf_vectorizer.fit_transform(test_document.values)
     dist_test = 1-cosine_similarity(tfidf_matrix_test)   
-    terms = tfidf_vectorizer.get_feature_names()
 
     # dist
     test_cluster = km.predict(tfidf_matrix_test)
@@ -142,20 +151,82 @@ if __name__=='__main__':
         dist = np.append(dist,dist_min_0)
 
     # wordcloud
-    word_1 = train_document.loc[np.where(np.array(clusters)==1)[0]]
-    word_0 = train_document.loc[np.where(np.array(clusters)==0)[0]]
-    wc_1 = WordCloud().generate(''.join(word_1.values))
-    wc_0 = WordCloud().generate(''.join(word_0.values))
+    for i in range(num_clusters):
+        word = train_document.loc[np.where(np.array(clusters)==i)[0]]
+        word_cloud = WordCloud().generate(''.join(word.values))
+        plt.imshow(word_cloud, interpolation='bilinear')
+        plt.axis('off')
+        plt.savefig(r'E:\Data_analysis_figures\incident_correlation'+'/'
+                        + state_isoutage+'_'+str(max_features)+'_'+str(num_clusters)+'_'+str(i)+'.jpeg')
 
     # result
     print(np.mean(dist))
     print(terms)
-    plt.imshow(wc_0, interpolation='bilinear')
-    plt.axis('off')
+
+    id = data['IncidentId'] 
+    file_savename = './file/icm_ticket/'+'/'+ state_isoutage+'_'+str(max_features)+'_'+str(num_clusters)+'_'+str(i)+'_'
+    id.to_csv(file_savename+'id.csv')
+    np.savetxt(file_savename+'dist_test.csv',dist_test,delimiter=',')
+    np.savetxt(file_savename+'tfidf.csv',tfidf_matrix.toarray(),delimiter=',')
+
+    # cluster_figure
+    from sklearn.manifold import MDS
+    from sklearn.decomposition import PCA
+    # MDS降维算法
+    MDS()
+    mds = MDS(n_components=2, dissimilarity="precomputed", random_state=1)
+    pos = mds.fit_transform(dist_test)  # shape (n_components, n_samples)
+    ## pca降维算法
+    # pca = PCA(n_components=2)
+    # pos = pca.fit_transform(dist_test)
+    # pos = pca.fit_transform(tfidf_matrix.toarray())
+    xs, ys = pos[:, 0], pos[:, 1]
+
+    #set up colors per clusters using a dict
+    cluster_colors = {0: '#FF0000', 1: '#d95f02', 2: '#7570b3'} #, 3: '#FFFF00', 4: '#66a61e'}
+    #set up cluster names using a dict
+    cluster_names = {0: 'label=0', 
+                    1: 'label=1', 
+                    2: 'label=2'} #, 
+                   # 3: 'label=3',
+                   # 4: 'label=4'}
+    #create data frame that has the result of the cluster numbers and titles
+    df = pd.DataFrame(dict(x=xs, y=ys, label=clusters)) 
+
+    #group by cluster
+    groups = df.groupby('label')
+    # set up plot
+    fig, ax = plt.subplots(figsize=(17, 9)) # set size
+    ax.margins(0.05) # Optional, just adds 5% padding to the autoscaling
+    #iterate through groups to layer the plot
+    #note that I use the cluster_name and cluster_color dicts with the 'name' lookup to return the appropriate color/label
+    for name, group in groups:
+        ax.plot(group.x, group.y, marker='o', linestyle='', ms=12, 
+                label=cluster_names[name], color=cluster_colors[name], 
+                mec='none')
+        ax.set_aspect('auto')
+        ax.tick_params(\
+            axis= 'x',          # changes apply to the x-axis
+            which='both',      # both major and minor ticks are affected
+            bottom='off',      # ticks along the bottom edge are off
+            top='off',         # ticks along the top edge are off
+            labelbottom='off')
+        ax.tick_params(\
+            axis= 'y',         # changes apply to the y-axis
+            which='both',      # both major and minor ticks are affected
+            left='off',      # ticks along the bottom edge are off
+            top='off',         # ticks along the top edge are off
+            labelleft='off')    
+    ax.legend(numpoints=1)  #show legend with only 1 point
+    #add label in x,y position with the label as the film title
+    for i in range(len(df)):
+        #与loc不同的之处是，.iloc 是根据行数与列数来索引的
+        ax.text(df.loc[i]['x'], df.loc[i]['y'], df.loc[i]['label'].astype(int), size=8)  
     plt.show()
-    plt.imshow(wc_1, interpolation='bilinear')
-    plt.axis('off')
-    plt.show()
+    plt.savefig(r'E:\Data_analysis_figures\incident_correlation'+'/'
+                         + state_isoutage+'_'+str(max_features)+'_'+str(num_clusters)+'_'+'cluster'+'.jpeg')
+
+    # plt.show() #show the plot
 
 
 
