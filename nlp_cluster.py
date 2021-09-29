@@ -25,6 +25,7 @@ from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import re
 import html2text
+from wordhoard import Antonyms
 
 
 """
@@ -76,17 +77,16 @@ Parameters:
 Returns:
      list_filter_stopwords：停用词过滤后的词列表
 """
-def stopwords_filter(filename,list_words_lemmatizer):
+def stopwords_filter(stopwords,list_words_lemmatizer):
     list_filter_stopwords=[]  #声明一个停用词过滤后的词列表
-    with open(filename,'r') as fr:
-        stop_words=list(fr.read().split('\n')) #将停用词读取到列表里
-        for i in range(len(list_words_lemmatizer)):
-            word_list = []
-            for j in list_words_lemmatizer[i]:
-                if j not in stop_words:
-                    word_list.append(j.lower()) #将词变为小写加入词列表
-            list_filter_stopwords.append(word_list)
-        return list_filter_stopwords
+    stop_words=list(stopwords) #将停用词读取到列表里
+    for i in range(len(list_words_lemmatizer)):
+        word_list = []
+        for j in list_words_lemmatizer[i].split():
+            if j not in stop_words:
+                word_list.append(j.lower()) #将词变为小写加入词列表
+        list_filter_stopwords.append(' '.join(word_list))
+    return pd.Series(list_filter_stopwords)
 
 
 """
@@ -117,39 +117,6 @@ def words2vec(feature_words,doc_words,doc_category_labels):
         labelvec_list.append(doclabel)
     return docvec_list,labelvec_list
 
-
-#同义词过滤
-def get_syn(word_list):
-    synonym_lists = []
-    for word in word_list:
-        syn = []
-        for synonym in wordnet.synsets(word):
-            for lemma in synonym.lemmas():
-                syn.append(str(lemma.name()))
-        synonym_lists.append(syn)
-    return synonym_lists
-
-
-def is_synonyms(synonym_lists,word):
-    for index, synonym_set in enumerate(synonym_lists):
-        if word in synonym_set:
-            return index
-    return -1
-
-
-def synonyns_filtered(sample):
-    synonym_lists = get_syn(sample)
-    for i in range(len(sample)-1):
-        word = sample[i]
-        ind = is_synonyms(synonym_lists, word)
-        if ind != -1:
-            synonym_set = synonym_lists[ind]
-            for m in range(i,len(sample)):
-                if sample[m] in synonym_set:
-                    sample[m] = word
-    return sample
-
-
 # 获取单词的词性
 def get_wordnet_pos(tag):
     if tag.startswith('J'):
@@ -162,6 +129,59 @@ def get_wordnet_pos(tag):
         return wordnet.ADV
     else:
         return wordnet.NOUN
+
+
+#同义词过滤
+# def get_syn(word_list):
+#     synonym_lists = []
+#     for word in word_list:
+#         autonym = Antonyms(word)
+#         syn = autonym.find_antonyms()
+#         synonym_lists.append(syn)
+#     return synonym_lists
+def get_syn(word_list):
+    tagged_sent = pos_tag(word_list)
+    wnl = WordNetLemmatizer()
+    synonym_lists = []
+    for tag in tagged_sent:
+        syn = []
+        wordnet_pos = get_wordnet_pos(tag[1])
+        for synonym in wordnet.synsets(tag[0],pos=wordnet_pos):
+            for lemma in synonym.lemmas():
+                syn.append(str(lemma.name()))
+        synonym_lists.append(syn)
+    return synonym_lists
+
+# def get_syn(word_list):
+#     synonym_lists = []
+#     for word in word_list:
+#         syn = []
+#         for synonym in wordnet.synsets(word):
+#             for lemma in synonym.lemmas():
+#                 syn.append(str(lemma.name()))
+#         synonym_lists.append(syn)
+#     return synonym_lists
+
+
+def is_synonyms(synonym_lists,word):
+    for index, synonym_set in enumerate(synonym_lists):
+        if word in synonym_set:
+            return index
+    return -1
+
+
+def synonyms_filtered(sample):
+    synonym_lists = get_syn(sample)
+    for i in range(len(sample)-1):
+        word = sample[i]
+        ind = is_synonyms(synonym_lists, word)
+        if ind != -1:
+            synonym_set = synonym_lists[ind]
+            for m in range(i,len(sample)):
+                if sample[m] in synonym_set:
+                    sample[m] = word
+    return sample
+
 
 def filter_homograph(train_document):
     train_document_new = train_document
@@ -198,8 +218,8 @@ if __name__=='__main__':
     data = pd.read_excel(r'E:\Data\ICM_Kusto_Data_YTD_2021.xlsx',sheet_name='filter_s3_test')
     data = data.fillna('-1')
 
-    max_features = 5
-    num_clusters = 2
+    max_features = 10
+    num_clusters = 4
     data = data[data['IsOutage']==True]
     state_isoutage = 'true'
     # data = data[data['IsOutage']=='-1']
@@ -217,7 +237,8 @@ if __name__=='__main__':
     # train_document = train_document.apply(lambda x: re.compile(r'&\w+;',re.S).sub(' ', x)) #去除html'& ;'格式
 
     #去除‘:’
-    train_document = train_document.apply(lambda x: re.compile(r':',re.S).sub(' ', x)) 
+    # train_document = train_document.apply(lambda x: re.compile(r':',re.S).sub(' ', x)) 
+    train_document = train_document.apply(lambda x: x.replace(r':',' ').replace(r'(','').replace(r')','')) 
 
     # 日期时间格式代替
     # rex_date = r'((20\d{​2}​-(1[0-2]|0\d)-([0-2]\d|3[0-1]))|\d{​2}​\.(1[0-2]|0\d)\.([0-2]\d|3[0-1]))'
@@ -227,11 +248,19 @@ if __name__=='__main__':
     rex_date = r"(\d{4}-\d{1,2}-\d{1,2}\s\d{1,2}:\d{1,2})"
     train_document = train_document.apply(lambda x: re.compile(rex_date,re.S).sub(' ', x))
 
+    #去除stopwords
+    nltk.download('stopwords')
+    stopwords = nltk.corpus.stopwords.words('english')  
+    f = open('stop_word.txt')
+    stopwords_n = f.read().splitlines()
+    stopwords = stopwords+stopwords_n
+    train_document = stopwords_filter(stopwords,train_document)
+
     #词形还原
     train_document = filter_homograph(train_document)
 
     #同义词去除
-    train_document = train_document.apply(lambda y: ' '.join(synonyns_filtered(y.split())))
+    train_document = train_document.apply(lambda y: ' '.join(synonyms_filtered(y.split())))
 
     #词形还原
     train_document = filter_homograph(train_document)
@@ -239,11 +268,6 @@ if __name__=='__main__':
     # train_document = train_document.apply(lambda y: ' '.join([pst.stem(x) for x in y.split()]))
 
     #feature--tfidf
-    nltk.download('stopwords')
-    stopwords = nltk.corpus.stopwords.words('english')  
-    f = open('stop_word.txt')
-    stopwords_n = f.read().splitlines()
-    stopwords = stopwords+stopwords_n
     tfidf_vectorizer = TfidfVectorizer(max_features=max_features, stop_words=stopwords) #
     tfidf_matrix = tfidf_vectorizer.fit_transform(train_document.values)
     dist_train = 1-cosine_similarity(tfidf_matrix)  
@@ -281,10 +305,11 @@ if __name__=='__main__':
         dist = np.append(dist,dist_min_0)
     
     id = data['IncidentId'] 
-    file_savename = './file/icm_ticket/'+'/'+ state_isoutage+'_'+str(max_features)+'_'+str(num_clusters)+'_'+str(i)+'_'
-    id.to_csv(file_savename+'id.csv')
-    np.savetxt(file_savename+'dist_test.csv',dist_test,delimiter=',')
-    np.savetxt(file_savename+'tfidf.csv',tfidf_matrix.toarray(),delimiter=',')
+    file_savename = './file/icm_ticket/'+'/'+ state_isoutage+'_'+str(max_features)+'_'+str(num_clusters)+'_'
+    id.to_csv(file_savename+'id_n1.csv')
+    np.savetxt(file_savename+'dist_test_n1.csv',dist_test,delimiter=',')
+    np.savetxt(file_savename+'tfidf_n1.csv',tfidf_matrix.toarray(),delimiter=',')
+    np.savetxt(file_savename+'label.csv',label,delimiter=',')
     
     # # wordcloud
     # for i in range(num_clusters):
@@ -315,16 +340,16 @@ if __name__=='__main__':
     # mds = MDS(n_components=2, dissimilarity="precomputed", random_state=1)
     # pos = mds.fit_transform(dist_test)  # shape (n_components, n_samples)
     pca = PCA(n_components=2)
-    pos = pca.fit_transform(dist_test)
-    # pos = pca.fit_transform(tfidf_matrix.toarray())
+    # pos = pca.fit_transform(dist_test)
+    pos = pca.fit_transform(tfidf_matrix.toarray())
     xs, ys = pos[:, 0], pos[:, 1]
 
     #set up colors per clusters using a dict
-    cluster_colors = {0: '#FF0000', 1:'#66a61e'} #, 2: '#7570b3', 3: '#FFFF00',4:'#000000',5:'#FF00FF'
+    cluster_colors = {0: '#FF0000', 1:'#66a61e', 2: '#7570b3', 3: '#FFFF00'} #,4:'#000000',5:'#FF00FF'
     #set up cluster names using a dict
     cluster_names = {0: 'label=0', 
-                    1: 'label=1'} 
-                    #, 2: 'label=2',3: 'label=3',4: 'label=4',5:'label=5'
+                    1: 'label=1', 2: 'label=2',3: 'label=3'} 
+                    #,4: 'label=4',5:'label=5'
 
     #create data frame that has the result of the cluster numbers and titles
     df = pd.DataFrame(dict(x=xs, y=ys, label=clusters)) 
@@ -353,13 +378,18 @@ if __name__=='__main__':
             left='off',      # ticks along the bottom edge are off
             top='off',         # ticks along the top edge are off
             labelleft='off')    
+        ax.annotate('X', 
+            df.loc[df['label']==name,['x','y']].mean(),
+            horizontalalignment='center',
+            verticalalignment='center',
+            size=20, weight='bold',color='black') 
     ax.legend(numpoints=1)  #show legend with only 1 point
     #add label in x,y position with the label as the film title
     for i in range(len(df)):
         #与loc不同的之处是，.iloc 是根据行数与列数来索引的
         ax.text(df.loc[i]['x'], df.loc[i]['y'], df.loc[i]['label'].astype(int), size=8)  
     plt.savefig(r'E:\Data_analysis_figures\incident_correlation'+'/'
-                         + state_isoutage+'_'+str(max_features)+'_'+str(num_clusters)+'_pca_dist_cluster'+'.jpeg')
+                         + state_isoutage+'_'+str(max_features)+'_'+str(num_clusters)+'_mds_dist_cluster_n1'+'.jpeg')
 
     # plt.show() #show the plot
     
